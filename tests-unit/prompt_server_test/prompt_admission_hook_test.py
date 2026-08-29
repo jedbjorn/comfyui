@@ -26,9 +26,11 @@ def prompt_server(monkeypatch):
     monkeypatch.setattr(server, "register_assets_routes", Mock())
     monkeypatch.setattr(server.asset_seeder, "disable", Mock())
 
-    prompt_server = server.PromptServer(asyncio.get_running_loop())
+    loop = asyncio.new_event_loop()
+    prompt_server = server.PromptServer(loop)
     prompt_route = next(route for route in prompt_server.routes if route.path == "/prompt")
-    return prompt_server, prompt_route.handler, prompt_queue, node_replace_manager
+    yield prompt_server, prompt_route.handler, prompt_queue, node_replace_manager
+    loop.close()
 
 
 def prompt_request(body, headers=None):
