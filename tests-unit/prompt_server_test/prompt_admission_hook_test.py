@@ -28,7 +28,7 @@ def prompt_server(monkeypatch):
 
     loop = asyncio.new_event_loop()
     prompt_server = server.PromptServer(loop)
-    prompt_route = next(route for route in prompt_server.routes if route.path == "/prompt")
+    prompt_route = next(route for route in prompt_server.routes if route.method == "POST" and route.path == "/prompt")
     yield prompt_server, prompt_route.handler, prompt_queue, node_replace_manager
     loop.close()
 
