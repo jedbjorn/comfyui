@@ -271,7 +271,7 @@ def dynamic_vram_supported():
 
 if args.enable_dynamic_vram or (enables_dynamic_vram() and dynamic_vram_supported()):
     if (not args.enable_dynamic_vram) and (comfy.model_management.torch_version_numeric < (2, 8)):
-        logging.warning("Unsupported Pytorch detected. DynamicVRAM support requires Pytorch version 2.8 or later. Falling back to legacy ModelPatcher. VRAM estimates may be unreliable especially on Windows")
+        logging.warning("Unsupported Pytorch detected. DynamicVRAM support requires Pytorch version 2.8 or later (2.12+ is recommended). Falling back to legacy ModelPatcher. VRAM estimates may be unreliable especially on Windows")
     else:
         try:
             aimdo_initialized = comfy_aimdo.control.init_devices((d.index, int(args.vram_headroom * 1024 ** 3)) for d in comfy.model_management.get_all_torch_devices())
@@ -392,11 +392,48 @@ def prompt_worker(q, server_instance):
             lease_acquired = False
             start_hook = server_instance.prompt_execution_start_hook
             if start_hook is not None:
-                asyncio.run_coroutine_threadsafe(
-                    start_hook({"prompt_id": prompt_id, "sensitive": sensitive}),
-                    server_instance.loop,
-                ).result()
-                lease_acquired = True
+                # This prompt is now the running item. An interrupt raised while it
+                # waits for its execution lease belongs to it: reset the flag here so
+                # a late interrupt of the previous prompt cannot leak onto this one,
+                # then honour any interrupt observed once the lease is granted.
+                nodes.interrupt_processing(False)
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        start_hook({"prompt_id": prompt_id, "sensitive": sensitive}),
+                        server_instance.loop,
+                    ).result()
+                    lease_acquired = True
+                except Exception:
+                    # A refused execution lease must record a failed prompt and keep
+                    # the worker alive; dying here would strand every queued item.
+                    logging.exception("Prompt execution lease was refused", extra={'color': 'red'})
+                    q.task_done(item_id,
+                                {},
+                                status=execution.PromptQueue.ExecutionStatus(
+                                    status_str='error',
+                                    completed=False,
+                                    messages=['lease_refused']),
+                                process_item=lambda prompt: prompt[:5] + prompt[6:])
+                    continue
+                if comfy.model_management.processing_interrupted():
+                    # Interrupted before execution: release the lease without running
+                    # the graph and record the prompt as interrupted.
+                    nodes.interrupt_processing(False)
+                    logging.info("Prompt %s interrupted while waiting for its execution lease", prompt_id)
+                    complete_hook = server_instance.prompt_execution_complete_hook
+                    if complete_hook is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            complete_hook({"prompt_id": prompt_id, "sensitive": sensitive}),
+                            server_instance.loop,
+                        ).result()
+                    q.task_done(item_id,
+                                {},
+                                status=execution.PromptQueue.ExecutionStatus(
+                                    status_str='error',
+                                    completed=False,
+                                    messages=['interrupted_before_execution']),
+                                process_item=lambda prompt: prompt[:5] + prompt[6:])
+                    continue
 
             try:
                 asset_seeder.pause()
@@ -619,7 +656,7 @@ if __name__ == "__main__":
             "dynamic vram enabled please give us a detailed reports as this "
             "argument will be removed soon. If you use gguf we recommend keeping "
             "dynamic vram enabled and using native ComfyUI model formats instead. "
-            "ComfyUI native formats like fp8 will be faster even if they are larger than your memory."
+            "ComfyUI native formats like fp8, int8 and w4a8 will be faster even if they are larger than your memory."
         )
     event_loop, _, start_all_func = start_comfyui()
     try:
