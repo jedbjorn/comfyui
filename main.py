@@ -399,7 +399,7 @@ def prompt_worker(q, server_instance):
                 nodes.interrupt_processing(False)
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        start_hook({"prompt_id": prompt_id, "sensitive": sensitive}),
+                        start_hook({"prompt_id": prompt_id, "sensitive": sensitive, "prompt": item[2]}),
                         server_instance.loop,
                     ).result()
                     lease_acquired = True

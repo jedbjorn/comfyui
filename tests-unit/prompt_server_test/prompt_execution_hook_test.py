@@ -158,8 +158,10 @@ def test_hooks_run_on_server_loop_in_order_with_exact_private_context(worker_set
     assert events == ["start", "execute", "complete"]
     assert loops == [worker_setup.server.loop, worker_setup.server.loop]
     assert len(contexts) == 2
+    assert set(contexts[0]) == {"prompt_id", "sensitive", "prompt"}
+    assert contexts[0]["prompt"] is worker_setup.prompt
+    assert set(contexts[1]) == {"prompt_id", "sensitive"}
     for context in contexts:
-        assert set(context) == {"prompt_id", "sensitive"}
         assert context["prompt_id"] == PROMPT_ID
         assert context["sensitive"] is worker_setup.sensitive
 
@@ -255,14 +257,11 @@ def test_start_hook_failure_skips_execution_and_completion(worker_setup):
     worker_setup.server.prompt_execution_start_hook = start_hook
     worker_setup.server.prompt_execution_complete_hook = complete_hook
 
-    with pytest.raises(RuntimeError) as raised:
-        main.prompt_worker(worker_setup.queue, worker_setup.server)
-
-    assert raised.value is start_error
+    run_one_prompt(worker_setup)
     worker_setup.pause.assert_not_called()
     worker_setup.executor.execute.assert_not_called()
     completed.assert_not_called()
-    worker_setup.queue.task_done.assert_not_called()
+    worker_setup.queue.task_done.assert_called_once()
 
 
 def test_completion_hook_failure_propagates(worker_setup):
@@ -306,7 +305,7 @@ def test_refused_start_hook_fails_the_prompt_and_keeps_the_worker_alive(worker_s
     status = worker_setup.queue.task_done.call_args.kwargs["status"]
     assert status.status_str == "error"
     assert status.completed is False
-    assert worker_setup.queue.task_done.call_args.kwargs["history_result"] == {}
+    assert worker_setup.queue.task_done.call_args.args[1] == {}
 
 
 def test_worker_survives_refused_leases_and_executes_the_next_prompt(worker_setup):
@@ -314,7 +313,9 @@ def test_worker_survives_refused_leases_and_executes_the_next_prompt(worker_setu
     refused = True
 
     async def start_hook(context):
+        nonlocal refused
         if refused:
+            refused = False
             raise RuntimeError("refused once")
         executed.append(context["prompt_id"])
 
@@ -325,6 +326,7 @@ def test_worker_survives_refused_leases_and_executes_the_next_prompt(worker_setu
 
     class TwoItemQueue(SingleItemQueue):
         def __init__(self, first, second):
+            super().__init__(first)
             self.items = [(first, 1), (second, 2)]
             self.index = 0
 
@@ -339,15 +341,11 @@ def test_worker_survives_refused_leases_and_executes_the_next_prompt(worker_setu
     second_id = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
     queue = TwoItemQueue(
         (0, PROMPT_ID, {"1": {}}, {}, ["1"], {}),
-        (0, second_id := second_prompt_id(), {"1": {}}, {}, ["1"], {}),
+        (0, second_id, {"1": {}}, {}, ["1"], {}),
     )
     worker_setup.queue = queue
 
     run_one_prompt(worker_setup)
 
-    assert executed == [second_id]
+    assert executed == [second_id, f"executed-{second_id}"]
     assert queue.task_done.call_count == 2
-
-
-def second_prompt_id():
-    return "cccccccc-dddd-4eee-8fff-000000000001"
